@@ -1,31 +1,29 @@
 from app.memory.base import MemoryStrategy
 from app.models import Message
+from app.tokenizer import count_tokens
 
 
 class SummaryMemory(MemoryStrategy):
-    """v2 -- running summary of old turns + a recent window of raw turns.
+    """v2 -- running summary of old turns + recent raw messages within budget."""
 
-    The first genuinely non-trivial strategy. build_context() just assembles:
-        [system summary] + [recent raw messages within budget]
-    The hard part is the COMPACTION step that creates the summary -- that needs
-    an LLM call, so it's async and lives outside build_context (see base.py note).
+    def build_context(self, messages, budget_tokens, summary=None):
+        context = []
+        remaining = budget_tokens
 
-    TODO(KaLong):
-      build_context():
-        - If `summary` exists, prepend it as a system message
-          (e.g. role="system", content="Summary so far: ...").
-        - Then add the most recent raw messages that fit the remaining budget.
-      compaction (design it; probably an async method or a service function):
-        - Trigger when live tokens exceed some threshold of budget.
-        - Take the oldest live messages, ask the LLM to fold them into the
-          existing summary, save Conversation.summary, set is_summarized=True
-          on those rows.
-    """
+        if summary:
+            summary_text = "Summary of earlier conversation: " + summary
+            context.append({"role": "system", "content": summary_text})
+            remaining -= count_tokens(summary_text)
 
-    def build_context(
-        self,
-        messages: list[Message],
-        budget_tokens: int,
-        summary: str | None = None,
-    ) -> list[dict]:
-        raise NotImplementedError("KaLong writes this in v2")
+        kept = []
+        total = 0
+        for message in reversed(messages):
+            if total + message.token_count > remaining:
+                break
+            kept.append(message)
+            total += message.token_count
+
+        for message in reversed(kept):
+            context.append({"role": message.role, "content": message.content})
+
+        return context
